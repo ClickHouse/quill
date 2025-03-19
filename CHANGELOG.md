@@ -1,4 +1,4 @@
-- [v8.3.0](#v830)
+- [v9.0.0](#v900)
 - [v8.2.0](#v820)
 - [v8.1.1](#v811)
 - [v8.1.0](#v810)
@@ -85,16 +85,122 @@
 - [v1.1.0](#v110)
 - [v1.0.0](#v100)
 
-## v8.3.0
+## v9.0.0
+
+## API Changes
+
+- Replaced the `bool huge_pages_enabled` flag in `FrontendOptions` with `quill::HugePagesPolicy huge_pages_policy` enum,
+  allowing huge page allocation to be attempted with a fallback to normal pages if unavailable. If you are using a
+  custom `FrontendOptions` type, you will need to update it to use the new
+  flag. ([#707](https://github.com/odygrd/quill/issues/707))
+- The `ConsoleSink` constructor now optionally accepts a `ConsoleSinkConfig`, similar to other sinks. If no
+  `ConsoleSinkConfig` is provided, a default one is used, logging to `stdout` with `ColourMode::Automatic`. For example:
+    ```c++
+    Frontend::create_or_get_sink<ConsoleSink>("console_sink",
+                                              []()
+                                              {
+                                                ConsoleSinkConfig config;
+                                                config.set_colour_mode(ConsoleSinkConfig::ColourMode::Never);
+                                                config.set_stream("stderr");
+                                                return config;
+                                              }());
+    ```
+
+## New Features
+
+- The default log level for each `Logger` can now be configured using the environment variable `QUILL_LOG_LEVEL`.
+  Supported values: `"tracel3"`, `"tracel2"`, `"tracel1"`, `"debug"`, `"info"`, `"notice"`, `"warning"`, `"error"`,
+  `"critical"`, `"none"`. When set, the logger is initialized with the corresponding log level. If
+  `logger->set_log_level(level)` is explicitly called in code, it will override the log level set via the environment
+  variable.
+- Added the `LOG_RUNTIME_METADATA(logger, log_level, file, line_number, function, fmt, ...)` macro.  
+  This enables passing runtime metadata (such as file, line number, and function) along with a log message,  
+  providing greater flexibility when forwarding logs from other logging
+  libraries. ([#696](https://github.com/odygrd/quill/issues/696))
+
+    ```c++
+    LOG_RUNTIME_METADATA(logger, quill::LogLevel::Info, "main.cpp", 20, "foo()", "Hello number {}", 8);
+    ```
+- Added a runtime check to detect duplicate backend worker threads caused by inconsistent linkage  
+  (e.g., mixing static and shared libraries). If needed, this check can be disabled using the  
+  `check_backend_singleton_instance` flag in
+  `BackendOptions`. ([#687](https://github.com/odygrd/quill/discussions/687#discussioncomment-12349621))
+- Added the `QUILL_DISABLE_FUNCTION_NAME` preprocessor flag and CMake option.  
+  This allows disabling `__FUNCTION__` in `LOG_*` macros when `%(caller_function)` is not used in `PatternFormatter`,  
+  eliminating Clang-Tidy warnings when logging inside lambdas.
+- It is now possible to override a logger's `PatternFormatter` on a per-sink basis. This allows the same logger to
+  output different formats for different sinks. Previously, achieving this required creating a custom sink type, but
+  this functionality is now built-in. See the
+  example: [sink_formatter_override](https://github.com/odygrd/quill/blob/master/examples/sink_formatter_override.cpp).
+- Added `Frontend::remove_logger_blocking(...)`, which blocks the caller thread until the specified logger is fully
+  removed.
+- Added the `SyslogSink`, which logs messages to the system's syslog.
+
+    ```c++
+    auto sink = quill::Frontend::create_or_get_sink<quill::SyslogSink>(
+      "app", []()
+      {
+        quill::SyslogSinkConfig config;
+        config.set_identifier("app");
+        return config;
+      }());
+    ```
+- Added the `SystemdSink`, which logs messages to systemd.
+
+    ```c++
+    auto sink = quill::Frontend::create_or_get_sink<quill::SystemdSink>(
+      "app", []()
+      {
+        quill::SystemdSinkConfig config;
+        config.set_identifier("app");
+        return config;
+      }());
+    ```  
+- Added the `AndroidSink`, which integrates with Android's logging system.
+
+    ```c++
+    auto sink = quill::Frontend::create_or_get_sink<quill::AndroidSink>(
+      "s1", []()
+      {
+        quill::AndroidSinkConfig config;
+        config.set_tag("app");
+        config.set_format_message(true);
+        return config;
+      }());
+    ```
+
+## Improvements
 
 - Updated bundled `libfmt` to `11.1.4`.
-- Fixed BSD builds. ([#688](https://github.com/odygrd/quill/issues/688))
+- When `add_metadata_to_multi_line_logs` in the `PatternFormatter` was set to false, fixed a bug where the last
+  character of the log message was dropped and added protection for empty messages.
+- Updated `LOG_EVERY_N` macros to log on the first occurrence (0th call) instead of waiting until the Nth call.
+- The `CsvWriter` could previously be used with `RotatingFileSink` via the constructor that accepted  
+  `std::shared_ptr<Sink>`, but rotated files did not include the CSV header.  
+  This has now been improved—when using the new constructor that accepts `quill::RotatingFileSinkConfig`,  
+  the CSV header is written at the start of each new rotated
+  file. ([#700](https://github.com/odygrd/quill/discussions/700))
+
+    ```c++
+    quill::RotatingFileSinkConfig sink_config;
+    sink_config.set_open_mode('w');
+    sink_config.set_filename_append_option(FilenameAppendOption::None);
+    sink_config.set_rotation_max_file_size(512);
+    sink_config.set_rotation_naming_scheme(RotatingFileSinkConfig::RotationNamingScheme::Index);
+    
+    quill::CsvWriter<OrderCsvSchema, quill::FrontendOptions> csv_writer{"orders.csv", sink_config};
+    for (size_t i = 0; i < 40; ++i)
+    {
+      csv_writer.append_row(132121122 + i, "AAPL", i, 100.1, "BUY");
+    }
+    ```
 - On Linux, setting a long backend thread name now truncates it instead of
   failing. ([#691](https://github.com/odygrd/quill/issues/691))
-- Added a Windows-specific check to detect duplicate backend worker threads caused by inconsistent linkage (e.g., mixing
-  static and shared libraries). ([#687](https://github.com/odygrd/quill/discussions/687#discussioncomment-12349621))
+- Fixed BSD builds. ([#688](https://github.com/odygrd/quill/issues/688))
 - CMake improvements: switched to range syntax for minimum required version and bumped minimum required CMake version to
   `3.12`. ([#686](https://github.com/odygrd/quill/issues/686))
+- Correct the installation location of pkg-config files. They are now properly placed in `/usr/local/lib`.
+  ([#715](https://github.com/odygrd/quill/issues/715))
 
 ## v8.2.0
 
@@ -102,17 +208,17 @@
   from pre-`v4` versions. Previously, users had to define a custom `Codec` for every non-trivially copyable user-defined
   type they wanted to log.
 
-  ```c++
-  template <>
-  struct quill::Codec<UserTypeA> : quill::DeferredFormatCodec<UserTypeA>
-  {
-  };
-  
-  template <>
-  struct quill::Codec<UserTypeB> : quill::DirectFormatCodec<UserTypeB>
-  {
-  };
-  ```
+   ```c++
+   template <>
+   struct quill::Codec<UserTypeA> : quill::DeferredFormatCodec<UserTypeA>
+   {
+   };
+      
+   template <>
+   struct quill::Codec<UserTypeB> : quill::DirectFormatCodec<UserTypeB>
+   {
+   };
+   ```
 
   - `DeferredFormatCodec` now supports both trivially and non-trivially copyable types:
     - For trivially copyable types, it behaves the same as `TriviallyCopyableTypeCodec`.

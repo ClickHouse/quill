@@ -27,7 +27,9 @@ public:
     Log,
     InitBacktrace,
     FlushBacktrace,
-    Flush
+    Flush,
+    LogWithRuntimeMetadata,
+    LoggerRemovalRequest
   };
 
   constexpr MacroMetadata(char const* source_location, char const* caller_function,

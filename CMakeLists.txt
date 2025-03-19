@@ -13,6 +13,8 @@ option(QUILL_X86ARCH "Enable x86-specific optimizations for cache coherence usin
 
 option(QUILL_DISABLE_NON_PREFIXED_MACROS "Enable this option to disable non-prefixed `LOG_*` macros, keeping only the `QUILL_LOG_*` macros to avoid conflicts with other logging libraries." OFF)
 
+option(QUILL_DISABLE_FUNCTION_NAME "Disable the use of __FUNCTION__ in `LOG_*` macros when the function name is not needed." OFF)
+
 option(QUILL_BUILD_EXAMPLES "Enable this option to build and install the examples. Set this to ON to include example projects in the build process and have them installed after configuring with CMake." OFF)
 
 option(QUILL_BUILD_TESTS "Enable this option to build the test suite." OFF)
@@ -113,6 +115,7 @@ message(STATUS "QUILL_NO_EXCEPTIONS: " ${QUILL_NO_EXCEPTIONS})
 message(STATUS "QUILL_NO_THREAD_NAME_SUPPORT: " ${QUILL_NO_THREAD_NAME_SUPPORT})
 message(STATUS "QUILL_X86ARCH: " ${QUILL_X86ARCH})
 message(STATUS "QUILL_DISABLE_NON_PREFIXED_MACROS: " ${QUILL_DISABLE_NON_PREFIXED_MACROS})
+message(STATUS "QUILL_DISABLE_FUNCTION_NAME: " ${QUILL_DISABLE_FUNCTION_NAME})
 message(STATUS "QUILL_ENABLE_INSTALL: " ${QUILL_ENABLE_INSTALL})
 
 #---------------------------------------------------------------------------------------
@@ -159,6 +162,7 @@ set(HEADER_FILES
         include/quill/backend/BackendManager.h
         include/quill/backend/BackendOptions.h
         include/quill/backend/BackendWorker.h
+        include/quill/backend/BackendWorkerLock.h
         include/quill/backend/BacktraceStorage.h
         include/quill/backend/ManualBackendWorker.h
         include/quill/backend/PatternFormatter.h
@@ -211,6 +215,7 @@ set(HEADER_FILES
 
         include/quill/filters/Filter.h
 
+        include/quill/sinks/AndroidSink.h
         include/quill/sinks/ConsoleSink.h
         include/quill/sinks/FileSink.h
         include/quill/sinks/JsonSink.h
@@ -220,6 +225,8 @@ set(HEADER_FILES
         include/quill/sinks/RotatingSink.h
         include/quill/sinks/Sink.h
         include/quill/sinks/StreamSink.h
+        include/quill/sinks/SyslogSink.h
+        include/quill/sinks/SystemdSink.h
 
         include/quill/std/Array.h
         include/quill/std/Chrono.h
@@ -272,6 +279,10 @@ if (QUILL_DISABLE_NON_PREFIXED_MACROS)
     target_compile_definitions(${TARGET_NAME} PUBLIC INTERFACE -DQUILL_DISABLE_NON_PREFIXED_MACROS)
 endif ()
 
+if (QUILL_DISABLE_FUNCTION_NAME)
+    target_compile_definitions(${TARGET_NAME} PUBLIC INTERFACE -DQUILL_DISABLE_FUNCTION_NAME)
+endif ()
+
 if (CMAKE_VERSION VERSION_GREATER_EQUAL 3.19)
     # cmake prior to 3.19 does not support target_sources for interface libraries
     target_sources(${TARGET_NAME} PRIVATE ${HEADER_FILES})
@@ -319,7 +330,7 @@ if (QUILL_MASTER_PROJECT OR QUILL_ENABLE_INSTALL)
     set(QUILL_INC_DIR ${CMAKE_INSTALL_INCLUDEDIR} CACHE STRING
             "Installation directory for include files, relative to ${CMAKE_INSTALL_PREFIX}.")
 
-    set(QUILL_PKGCONFIG_DIR ${CMAKE_INSTALL_PREFIX}/pkgconfig CACHE PATH
+    set(QUILL_PKGCONFIG_DIR ${CMAKE_INSTALL_LIBDIR}/pkgconfig CACHE PATH
             "Installation directory for pkgconfig (.pc) files, relative to ${CMAKE_INSTALL_PREFIX}.")
 
     if (WIN32)

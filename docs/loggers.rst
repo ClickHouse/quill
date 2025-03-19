@@ -11,7 +11,9 @@ The Logger class is thread-safe.
 
 .. note::
    Due to the asynchronous design of the library, logger parameters are immutable after creation.
-   To modify a logger (such as adding or removing Sinks) you must remove and recreate it.
+   To modify a logger (such as adding or removing sinks), you must remove it, wait for its removal, and then recreate it with the same name.
+   Additionally, you should update any stored references to the logger*, as the newly created logger will have a different memory address.
+
 
 Logger Creation
 ---------------
@@ -37,17 +39,25 @@ The latter will create a new logger if one does not already exist; otherwise, it
 Logger Removal
 --------------
 
-Loggers can be removed using :cpp:func:`FrontendImpl::remove_logger`, which deletes them asynchronously. Once this function is called, the logger becomes invalid and should no longer be used for logging. The backend ensures that all pending log statements from the logger are processed before final removal. After removal, a logger with the same name can be recreated with different parameters.
+Loggers can be removed using :cpp:func:`FrontendImpl::remove_logger` or :cpp:func:`FrontendImpl::remove_logger_blocking`. These functions remove the logger asynchronously. Once a logger is removed, it becomes invalid and must no longer be used by any other thread. The backend ensures that all pending log statements from the logger are processed before final removal. After removal, a logger with the same `logger_name` can be recreated with different parameters.
 
-When all loggers associated with a particular ``Sink`` are removed, the ``Sink`` instances are destroyed, and any associated files are closed automatically.
+If you plan to use logger removal functions, ensure that no other threads continue using the logger after calling :cpp:func:`remove_logger` or :cpp:func:`FrontendImpl::remove_logger_blocking`. To avoid potential issues, it is recommended to create a separate logger for each application thread, giving each logger a unique `logger_name`. This ensures that when one thread removes its logger, it does not affect other threads.
 
-In most cases, creating a new logger is sufficient rather than removing the old one. However, removing a logger can be useful when the underlying sinks need to be destructed and files closed.
+When all loggers associated with a particular ``Sink`` are removed, the corresponding ``Sink`` instances are destroyed, and any associated files are closed automatically.
 
-For example, if a logger is created for each connected TCP session on a server, with logs written to a separate file, removing the logger upon session disconnection ensures that the underlying file is closed, provided no other logger is sharing the same ``Sink``.
+In many cases, it is sufficient to create a new logger rather than removing an old one. However, logger removal is particularly useful when the underlying sinks need to be destructed and files closed.
 
-It is possible to explicitly sync :cpp:func:`FrontendImpl::remove_logger`, provided that no other thread attempts to add or remove a logger during the process.
+For example, if your server creates a logger for each connected TCP session and writes logs to a separate file for each session, removing the logger upon session disconnection ensures that the underlying file is closed — provided no other logger is sharing the same ``Sink``.
+
+.. note::
+
+   While the logger removal functions (:cpp:func:`FrontendImpl::remove_logger` and :cpp:func:`FrontendImpl::remove_logger_blocking`) are thread-safe, **removing the same logger (`Logger*`) from multiple threads is not allowed**. Ensure that a single thread is responsible for removing a particular logger to avoid undefined behavior.
 
 .. literalinclude:: examples/quill_docs_example_loggers_remove.cpp
+   :language: cpp
+   :linenos:
+
+.. literalinclude:: ../examples/logger_removal_with_file_event_notifier.cpp
    :language: cpp
    :linenos:
 

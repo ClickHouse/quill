@@ -17,6 +17,7 @@
 #include <cstdio>
 #include <cstring>
 #include <functional>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -50,13 +51,18 @@ public:
   /**
    * @brief Constructor for StreamSink
    * @param stream The stream type (stdout, stderr, or file)
+   * @param override_pattern_formatter_options override the logger pattern formatter
    * @param file File pointer for file-based stream
    * @param file_event_notifier Notifies on file events
    * @throws QuillError if an invalid parameter is provided
    */
   explicit StreamSink(fs::path stream, FILE* file = nullptr,
+                      std::optional<PatternFormatterOptions> const& override_pattern_formatter_options = std::nullopt,
                       FileEventNotifier file_event_notifier = FileEventNotifier{})
-    : _filename(std::move(stream)), _file(file), _file_event_notifier(std::move(file_event_notifier))
+    : Sink(override_pattern_formatter_options),
+      _filename(std::move(stream)),
+      _file(file),
+      _file_event_notifier(std::move(file_event_notifier))
   {
     // reserve stdout and stderr as filenames
     if (_filename == std::string{"stdout"})
@@ -178,7 +184,6 @@ public:
    */
   QUILL_NODISCARD bool is_null() const noexcept { return _is_null; }
 
-protected:
   /**
    * @brief Writes data safely to the stream
    * @param ptr Pointer to the data to be written
@@ -197,6 +202,7 @@ protected:
     }
   }
 
+protected:
   /**
    * Flushes the stream
    */

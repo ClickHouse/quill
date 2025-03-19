@@ -1,5 +1,5 @@
-#include "quill_wrapper/overwrite_macros.h"
-#include "quill_wrapper/quill_wrapper.h"
+#include "overwrite_macros.h"
+#include "quill_static.h"
 
 int main()
 {

@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include "quill/core/Common.h"
 #include "quill/core/LogLevel.h"
 #include "quill/core/MacroMetadata.h"
 
@@ -40,6 +41,14 @@
 
 #if !defined(QUILL_IMMEDIATE_FLUSH)
   #define QUILL_IMMEDIATE_FLUSH 0
+#endif
+
+#if !defined(QUILL_FUNCTION_NAME)
+  #if defined(QUILL_DISABLE_FUNCTION_NAME)
+    #define QUILL_FUNCTION_NAME ""
+  #else
+    #define QUILL_FUNCTION_NAME __FUNCTION__
+  #endif
 #endif
 
 /** -- LOGV_ helpers begin -- **/
@@ -307,7 +316,7 @@
   {                                                                                                \
     if (likelyhood(logger->template should_log_statement<log_level>()))                            \
     {                                                                                              \
-      QUILL_DEFINE_MACRO_METADATA(__FUNCTION__, fmt, tags, log_level);                             \
+      QUILL_DEFINE_MACRO_METADATA(QUILL_FUNCTION_NAME, fmt, tags, log_level);                      \
       logger->template log_statement<QUILL_IMMEDIATE_FLUSH, false>(                                \
         quill::LogLevel::None, &macro_metadata, ##__VA_ARGS__);                                    \
     }                                                                                              \
@@ -349,17 +358,14 @@
   {                                                                                                   \
     if (likelyhood(logger->template should_log_statement<log_level>()))                               \
     {                                                                                                 \
-      thread_local uint64_t occurrences{0};                                                           \
-                                                                                                      \
-      if (occurrences >= n_occurrences - 1)                                                           \
+      thread_local uint64_t call_count = 0;                                                           \
+      thread_local uint64_t next_log_at = 0;                                                          \
+      if (call_count == next_log_at)                                                                  \
       {                                                                                               \
         QUILL_LOGGER_CALL(likelyhood, logger, tags, log_level, fmt, ##__VA_ARGS__);                   \
-        occurrences = 0;                                                                              \
+        next_log_at += n_occurrences;                                                                 \
       }                                                                                               \
-      else                                                                                            \
-      {                                                                                               \
-        ++occurrences;                                                                                \
-      }                                                                                               \
+      ++call_count;                                                                                   \
     }                                                                                                 \
   } while (0)
 
@@ -368,7 +374,7 @@
   {                                                                                                \
     if (QUILL_LIKELY(logger->template should_log_statement<quill::LogLevel::Backtrace>()))         \
     {                                                                                              \
-      QUILL_DEFINE_MACRO_METADATA(__FUNCTION__, fmt, tags, quill::LogLevel::Backtrace);            \
+      QUILL_DEFINE_MACRO_METADATA(QUILL_FUNCTION_NAME, fmt, tags, quill::LogLevel::Backtrace);     \
       logger->template log_statement<QUILL_IMMEDIATE_FLUSH, false>(                                \
         quill::LogLevel::None, &macro_metadata, ##__VA_ARGS__);                                    \
     }                                                                                              \
@@ -383,7 +389,7 @@
   {                                                                                                           \
     if (logger->should_log_statement(log_level))                                                              \
     {                                                                                                         \
-      QUILL_DEFINE_MACRO_METADATA(__FUNCTION__, fmt, tags, quill::LogLevel::Dynamic);                         \
+      QUILL_DEFINE_MACRO_METADATA(QUILL_FUNCTION_NAME, fmt, tags, quill::LogLevel::Dynamic);                  \
       logger->template log_statement<QUILL_IMMEDIATE_FLUSH, true>(log_level, &macro_metadata, ##__VA_ARGS__); \
     }                                                                                                         \
   } while (0)
@@ -958,6 +964,23 @@
   QUILL_DYNAMIC_LOGGER_CALL(logger, nullptr, log_level,                                            \
                             QUILL_GENERATE_NAMED_FORMAT_STRING(fmt, ##__VA_ARGS__), ##__VA_ARGS__)
 
+#define QUILL_LOG_RUNTIME_METADATA(logger, log_level, file, line_number, function, fmt, ...)       \
+  do                                                                                               \
+  {                                                                                                \
+    if (logger->should_log_statement(log_level))                                                   \
+    {                                                                                              \
+      static constexpr char const* fmt_enriched =                                                  \
+        fmt QUILL_MAGIC_SEPARATOR "{}" QUILL_MAGIC_SEPARATOR "{}" QUILL_MAGIC_SEPARATOR "{}";      \
+                                                                                                   \
+      static constexpr MacroMetadata macro_metadata{                                               \
+        "[placeholder]", "[placeholder]",   fmt_enriched,                                          \
+        nullptr,         LogLevel::Dynamic, MacroMetadata::Event::LogWithRuntimeMetadata};         \
+                                                                                                   \
+      logger->template log_statement<QUILL_IMMEDIATE_FLUSH, true>(                                 \
+        log_level, &macro_metadata, ##__VA_ARGS__, file, line_number, function);                   \
+    }                                                                                              \
+  } while (0)
+
 #if !defined(QUILL_DISABLE_NON_PREFIXED_MACROS)
   #define TAGS(...) QUILL_TAGS(__VA_ARGS__)
   #define LOG_TRACE_L3(logger, fmt, ...) QUILL_LOG_TRACE_L3(logger, fmt, ##__VA_ARGS__)
@@ -1173,4 +1196,8 @@
     QUILL_LOGJ_ERROR_TAGS(logger, tags, fmt, ##__VA_ARGS__)
   #define LOGJ_CRITICAL_TAGS(logger, tags, fmt, ...)                                               \
     QUILL_LOGJ_CRITICAL_TAGS(logger, tags, fmt, ##__VA_ARGS__)
+
+  #define LOG_RUNTIME_METADATA(logger, log_level, file, line_number, function, fmt, ...)           \
+    QUILL_LOG_RUNTIME_METADATA(logger, log_level, file, line_number, function, fmt, ##__VA_ARGS__)
+
 #endif
