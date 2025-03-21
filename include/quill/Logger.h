@@ -307,6 +307,12 @@ public:
     }
   }
 
+  static void reset_thread_context()
+  {
+    thread_context = nullptr;
+    detail::reset_thread_context<TFrontendOptions>();
+  }
+
 private:
   friend class detail::LoggerManager;
   friend class detail::BackendWorker;
