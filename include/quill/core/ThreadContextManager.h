@@ -395,34 +395,15 @@ private:
   std::shared_ptr<ThreadContext> _thread_context;
 };
 
-inline thread_local std::shared_ptr<ScopedThreadContext> scoped_thread_context = nullptr;
-
-/***/
-template <typename TFrontendOptions>
-QUILL_ATTRIBUTE_COLD void initialize_thread_context() noexcept
-{
-  scoped_thread_context = std::make_shared<ScopedThreadContext>(
-    TFrontendOptions::queue_type, TFrontendOptions::initial_queue_capacity, TFrontendOptions::huge_pages_policy);
-}
-
-/***/
-template <typename TFrontendOptions>
-QUILL_ATTRIBUTE_COLD void reset_thread_context() noexcept
-{
-  scoped_thread_context.reset();
-}
-
 /***/
 template <typename TFrontendOptions>
 QUILL_NODISCARD QUILL_ATTRIBUTE_HOT ThreadContext* get_local_thread_context() noexcept
 {
-  if (!scoped_thread_context)
-    initialize_thread_context<TFrontendOptions>();
+  thread_local ScopedThreadContext scoped_thread_context{
+    TFrontendOptions::queue_type, TFrontendOptions::initial_queue_capacity, TFrontendOptions::huge_pages_policy};
 
-  return scoped_thread_context->get_thread_context();
+  return scoped_thread_context.get_thread_context();
 }
-
-
 } // namespace detail
 
 QUILL_END_NAMESPACE
