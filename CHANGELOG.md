@@ -87,12 +87,16 @@
 
 ## v9.0.0
 
-## API Changes
+### API Changes
 
 - Replaced the `bool huge_pages_enabled` flag in `FrontendOptions` with `quill::HugePagesPolicy huge_pages_policy` enum,
   allowing huge page allocation to be attempted with a fallback to normal pages if unavailable. If you are using a
   custom `FrontendOptions` type, you will need to update it to use the new
   flag. ([#707](https://github.com/odygrd/quill/issues/707))
+- Previously, `QueueType::UnboundedDropping` and `QueueType::UnboundedBlocking` could grow up to 2 GB in size. This
+  limit is now configurable via `FrontendOptions::unbounded_queue_max_capacity`, which defaults to 2 GB.
+- `QueueType::UnboundedUnlimited` has been removed, as the same behavior can now be achieved by setting
+  `FrontendOptions::unbounded_queue_max_capacity` to the maximum value.
 - The `ConsoleSink` constructor now optionally accepts a `ConsoleSinkConfig`, similar to other sinks. If no
   `ConsoleSinkConfig` is provided, a default one is used, logging to `stdout` with `ColourMode::Automatic`. For example:
     ```c++
@@ -106,7 +110,7 @@
                                               }());
     ```
 
-## New Features
+### New Features
 
 - The default log level for each `Logger` can now be configured using the environment variable `QUILL_LOG_LEVEL`.
   Supported values: `"tracel3"`, `"tracel2"`, `"tracel1"`, `"debug"`, `"info"`, `"notice"`, `"warning"`, `"error"`,
@@ -134,6 +138,10 @@
   example: [sink_formatter_override](https://github.com/odygrd/quill/blob/master/examples/sink_formatter_override.cpp).
 - Added `Frontend::remove_logger_blocking(...)`, which blocks the caller thread until the specified logger is fully
   removed.
+- Added `Frontend::shrink_thread_local_queue(capacity)` and `Frontend::get_thread_local_queue_capacity()`.
+  These functions allow dynamic management of thread-local SPSC queues when using an unbounded queue configuration. They
+  enable on-demand shrinking of a queue that has grown due to bursty logging, helping to reduce memory usage, although
+  in typical scenarios they won't be required.
 - Added the `SyslogSink`, which logs messages to the system's syslog.
 
     ```c++
@@ -169,7 +177,7 @@
       }());
     ```
 
-## Improvements
+### Improvements
 
 - Updated bundled `libfmt` to `11.1.4`.
 - When `add_metadata_to_multi_line_logs` in the `PatternFormatter` was set to false, fixed a bug where the last
@@ -197,6 +205,7 @@
 - On Linux, setting a long backend thread name now truncates it instead of
   failing. ([#691](https://github.com/odygrd/quill/issues/691))
 - Fixed BSD builds. ([#688](https://github.com/odygrd/quill/issues/688))
+- Fixed `QUILL_ATTRIBUTE_HOT` and `QUILL_ATTRIBUTE_COLD` clang detection
 - CMake improvements: switched to range syntax for minimum required version and bumped minimum required CMake version to
   `3.12`. ([#686](https://github.com/odygrd/quill/issues/686))
 - Correct the installation location of pkg-config files. They are now properly placed in `/usr/local/lib`.

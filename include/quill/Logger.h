@@ -50,6 +50,10 @@ class LoggerImpl : public detail::LoggerBase
 public:
   using frontend_options_t = TFrontendOptions;
 
+  static constexpr bool using_unbounded_queue =
+    (frontend_options_t::queue_type == QueueType::UnboundedBlocking) ||
+    (frontend_options_t::queue_type == QueueType::UnboundedDropping);
+
   /***/
   LoggerImpl(LoggerImpl const&) = delete;
   LoggerImpl& operator=(LoggerImpl const&) = delete;
@@ -135,13 +139,8 @@ public:
 
     std::byte* write_buffer = _prepare_write_buffer(total_size);
 
-    if constexpr (frontend_options_t::queue_type == QueueType::UnboundedUnlimited)
-    {
-      assert(write_buffer &&
-             "Unbounded unlimited queue will always allocate and have enough capacity");
-    }
-    else if constexpr ((frontend_options_t::queue_type == QueueType::BoundedDropping) ||
-                       (frontend_options_t::queue_type == QueueType::UnboundedDropping))
+    if constexpr ((frontend_options_t::queue_type == QueueType::BoundedDropping) ||
+                  (frontend_options_t::queue_type == QueueType::UnboundedDropping))
     {
       if (QUILL_UNLIKELY(write_buffer == nullptr))
       {
@@ -360,20 +359,10 @@ private:
    */
   QUILL_NODISCARD QUILL_ATTRIBUTE_HOT std::byte* _prepare_write_buffer(size_t total_size)
   {
-    constexpr bool is_unbounded_queue = (frontend_options_t::queue_type == QueueType::UnboundedUnlimited) ||
-      (frontend_options_t::queue_type == QueueType::UnboundedBlocking) ||
-      (frontend_options_t::queue_type == QueueType::UnboundedDropping);
-
-    if constexpr (is_unbounded_queue)
+    if constexpr (using_unbounded_queue)
     {
       // MSVC doesn't like the template keyword, but every other compiler requires it
-#if defined(_MSC_VER)
-      return thread_context->get_spsc_queue<frontend_options_t::queue_type>().prepare_write(
-        total_size, frontend_options_t::queue_type);
-#else
-      return thread_context->get_spsc_queue<frontend_options_t::queue_type>()
-        .template prepare_write<frontend_options_t::queue_type>(total_size);
-#endif
+      return thread_context->get_spsc_queue<frontend_options_t::queue_type>().prepare_write(total_size);
     }
     else
     {
