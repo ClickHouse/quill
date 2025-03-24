@@ -71,9 +71,11 @@ public:
   /**
    * Constructor
    */
-  explicit UnboundedSPSCQueue(size_t initial_bounded_queue_capacity,
-                              HugePagesPolicy huge_pages_policy = quill::HugePagesPolicy::Never)
-    : _producer(new Node(initial_bounded_queue_capacity, huge_pages_policy)), _consumer(_producer)
+  UnboundedSPSCQueue(size_t initial_bounded_queue_capacity, size_t max_capacity,
+                     HugePagesPolicy huge_pages_policy = quill::HugePagesPolicy::Never)
+    : _max_capacity(max_capacity),
+      _producer(new Node(initial_bounded_queue_capacity, huge_pages_policy)),
+      _consumer(_producer)
   {
   }
 
@@ -105,13 +107,7 @@ public:
    * making it visible to the consumer.
    * @return a valid point to the buffer
    */
-#if defined(_MSC_VER)
-  // MSVC doesn't like this as template <QueueType queue_type> when called from Logger, while it compiles on MSVC there will be false positives from clang-tidy
-  QUILL_NODISCARD QUILL_ATTRIBUTE_HOT std::byte* prepare_write(size_t nbytes, QueueType queue_type)
-#else
-  template <QueueType queue_type>
   QUILL_NODISCARD QUILL_ATTRIBUTE_HOT std::byte* prepare_write(size_t nbytes)
-#endif
   {
     // Try to reserve the bounded queue
     std::byte* write_pos = _producer->bounded_queue.prepare_write(nbytes);
@@ -121,11 +117,7 @@ public:
       return write_pos;
     }
 
-#if defined(_MSC_VER)
-    return _handle_full_queue(nbytes, queue_type);
-#else
-    return _handle_full_queue<queue_type>(nbytes);
-#endif
+    return _handle_full_queue(nbytes);
   }
 
   /**
@@ -138,7 +130,7 @@ public:
   }
 
   /**
-   * Commit the write to notify the consumer bytes are ready to read
+   * Commit write to notify the consumer bytes are ready to read
    */
   QUILL_ATTRIBUTE_HOT void commit_write() noexcept { _producer->bounded_queue.commit_write(); }
 
@@ -149,6 +141,40 @@ public:
   {
     finish_write(nbytes);
     commit_write();
+  }
+
+  /**
+   * Return the current buffer's capacity
+   * @note: producer only
+   * @return capacity
+   */
+  QUILL_NODISCARD size_t producer_capacity() const noexcept
+  {
+    return _producer->bounded_queue.capacity();
+  }
+
+  /**
+   * Shrinks the queue if capacity is a valid smaller power of 2.
+   * @param capacity New target capacity.
+   * @note: producer (frontend) is safe to call this - Do not call on the consumer (the backend worker)
+   */
+  void shrink(size_t capacity)
+  {
+    if (capacity > (_producer->bounded_queue.capacity() >> 1))
+    {
+      // We should only shrink if the new capacity is less or at least equal to the previous_power_of_2
+      return;
+    }
+
+    // We want to shrink the queue, we will create a new queue with a smaller size
+    // the consumer will switch to the newer queue after emptying and deallocating the older queue
+    auto const next_node = new Node{capacity, _producer->bounded_queue.huge_pages_policy()};
+
+    // store the new node pointer as next in the current node
+    _producer->next.store(next_node, std::memory_order_release);
+
+    // producer is now using the next node
+    _producer = next_node;
   }
 
   /**
@@ -193,12 +219,14 @@ public:
 
   /**
    * Return the current buffer's capacity
+   * @note: consumer only
    * @return capacity
    */
   QUILL_NODISCARD size_t capacity() const noexcept { return _consumer->bounded_queue.capacity(); }
 
   /**
    * checks if the queue is empty
+   * @note consumer only
    * @return true if empty, false otherwise
    */
   QUILL_NODISCARD QUILL_ATTRIBUTE_HOT bool empty() const noexcept
@@ -208,54 +236,38 @@ public:
 
 private:
   /***/
-#if defined(_MSC_VER)
-  QUILL_NODISCARD std::byte* _handle_full_queue(size_t nbytes, QueueType queue_type)
-#else
-  template <QueueType queue_type>
   QUILL_NODISCARD std::byte* _handle_full_queue(size_t nbytes)
-#endif
   {
     // Then it means the queue doesn't have enough size
     size_t capacity = _producer->bounded_queue.capacity() * 2ull;
-    while (capacity < (nbytes + 1))
+    while (capacity < nbytes)
     {
       capacity = capacity * 2ull;
     }
 
-#if defined(_MSC_VER)
-    if ((queue_type == QueueType::UnboundedBlocking) || (queue_type == QueueType::UnboundedDropping))
-#else
-    if constexpr ((queue_type == QueueType::UnboundedBlocking) || (queue_type == QueueType::UnboundedDropping))
-#endif
+    if (QUILL_UNLIKELY(capacity > _max_capacity))
     {
-      size_t constexpr max_bounded_queue_size = 2ull * 1024 * 1024 * 1024; // 2 GB
-
-      if (QUILL_UNLIKELY(capacity > max_bounded_queue_size))
+      if (nbytes > _max_capacity)
       {
-        if (nbytes > max_bounded_queue_size)
-        {
-          QUILL_THROW(QuillError{
-            "Logging single messages larger than 2 GB is not supported with the current queue "
-            "type. For UnboundedBlocking or UnboundedDropping queues, this limitation applies.\n"
-            "To log single messages larger than 2 GB, consider using the UnboundedUnlimited queue "
-            "type.\n"
-            "Message size: " +
-            std::to_string(nbytes) +
-            " bytes\n"
-            "Required queue capacity: " +
-            std::to_string(capacity) +
-            " bytes\n"
-            "Maximum allowed queue capacity: " +
-            std::to_string(max_bounded_queue_size) + " bytes"});
-        }
-
-        // we reached the max_bounded_queue_size we won't be allocating more
-        // instead return nullptr to block or drop
-        return nullptr;
+        QUILL_THROW(
+          QuillError{"Logging single messages larger than the configured maximum queue capacity "
+                     "is not possible.\n"
+                     "To log single messages exceeding this limit, consider increasing "
+                     "FrontendOptions::unbounded_queue_max_capacity.\n"
+                     "Message size: " +
+                     std::to_string(nbytes) +
+                     " bytes\n"
+                     "Required queue capacity: " +
+                     std::to_string(capacity) +
+                     " bytes\n"
+                     "Configured maximum queue capacity: " +
+                     std::to_string(_max_capacity) + " bytes"});
       }
-    }
 
-    // else the UnboundedUnlimited queue has no limits
+      // we reached the unbounded_queue_max_capacity we won't be allocating more
+      // instead return nullptr to block or drop
+      return nullptr;
+    }
 
     // commit previous write to the old queue before switching
     _producer->bounded_queue.commit_write();
@@ -310,6 +322,8 @@ private:
   }
 
 private:
+  size_t _max_capacity;
+
   /** Modified by either the producer or consumer but never both */
   alignas(QUILL_CACHE_LINE_ALIGNED) Node* _producer{nullptr};
   alignas(QUILL_CACHE_LINE_ALIGNED) Node* _consumer{nullptr};

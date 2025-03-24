@@ -59,18 +59,18 @@ private:
 
 public:
   /***/
-  ThreadContext(QueueType queue_type, uint32_t initial_spsc_queue_capacity, HugePagesPolicy huge_pages_policy)
+  ThreadContext(QueueType queue_type, size_t initial_queue_capacity,
+                QUILL_MAYBE_UNUSED size_t unbounded_queue_max_capacity, HugePagesPolicy huge_pages_policy)
     : _queue_type(queue_type)
   {
     if (has_unbounded_queue_type())
     {
       new (&_spsc_queue_union.unbounded_spsc_queue)
-        UnboundedSPSCQueue{initial_spsc_queue_capacity, huge_pages_policy};
+        UnboundedSPSCQueue{initial_queue_capacity, unbounded_queue_max_capacity, huge_pages_policy};
     }
     else if (has_bounded_queue_type())
     {
-      new (&_spsc_queue_union.bounded_spsc_queue)
-        BoundedSPSCQueue{initial_spsc_queue_capacity, huge_pages_policy};
+      new (&_spsc_queue_union.bounded_spsc_queue) BoundedSPSCQueue{initial_queue_capacity, huge_pages_policy};
     }
   }
 
@@ -93,16 +93,11 @@ public:
 
   /***/
   template <QueueType queue_type>
-  QUILL_NODISCARD QUILL_ATTRIBUTE_HOT
-    std::conditional_t<(queue_type == QueueType::UnboundedBlocking) || (queue_type == QueueType::UnboundedUnlimited) ||
-                         (queue_type == QueueType::UnboundedDropping),
-                       UnboundedSPSCQueue, BoundedSPSCQueue>&
-    get_spsc_queue() noexcept
+  QUILL_NODISCARD QUILL_ATTRIBUTE_HOT std::conditional_t<(queue_type == QueueType::UnboundedBlocking) || (queue_type == QueueType::UnboundedDropping), UnboundedSPSCQueue, BoundedSPSCQueue>& get_spsc_queue() noexcept
   {
     assert((_queue_type == queue_type) && "ThreadContext queue_type mismatch");
 
-    if constexpr ((queue_type == QueueType::UnboundedBlocking) ||
-                  (queue_type == QueueType::UnboundedUnlimited) || (queue_type == QueueType::UnboundedDropping))
+    if constexpr ((queue_type == QueueType::UnboundedBlocking) || (queue_type == QueueType::UnboundedDropping))
     {
       return _spsc_queue_union.unbounded_spsc_queue;
     }
@@ -114,16 +109,12 @@ public:
 
   /***/
   template <QueueType queue_type>
-  QUILL_NODISCARD QUILL_ATTRIBUTE_HOT
-    std::conditional_t<(queue_type == QueueType::UnboundedBlocking) || (queue_type == QueueType::UnboundedUnlimited) ||
-                         (queue_type == QueueType::UnboundedDropping),
-                       UnboundedSPSCQueue, BoundedSPSCQueue> const&
-    get_spsc_queue() const noexcept
+  QUILL_NODISCARD QUILL_ATTRIBUTE_HOT std::conditional_t<(queue_type == QueueType::UnboundedBlocking) || (queue_type == QueueType::UnboundedDropping), UnboundedSPSCQueue, BoundedSPSCQueue> const& get_spsc_queue()
+    const noexcept
   {
     assert((_queue_type == queue_type) && "ThreadContext queue_type mismatch");
 
-    if constexpr ((queue_type == QueueType::UnboundedBlocking) ||
-                  (queue_type == QueueType::UnboundedUnlimited) || (queue_type == QueueType::UnboundedDropping))
+    if constexpr ((queue_type == QueueType::UnboundedBlocking) || (queue_type == QueueType::UnboundedDropping))
     {
       return _spsc_queue_union.unbounded_spsc_queue;
     }
@@ -148,8 +139,7 @@ public:
   /***/
   QUILL_NODISCARD QUILL_ATTRIBUTE_HOT bool has_unbounded_queue_type() const noexcept
   {
-    return (_queue_type == QueueType::UnboundedBlocking) ||
-      (_queue_type == QueueType::UnboundedDropping) || (_queue_type == QueueType::UnboundedUnlimited);
+    return (_queue_type == QueueType::UnboundedBlocking) || (_queue_type == QueueType::UnboundedDropping);
   }
 
   /***/
@@ -341,8 +331,10 @@ class ScopedThreadContext
 {
 public:
   /***/
-  ScopedThreadContext(QueueType queue_type, uint32_t spsc_queue_capacity, HugePagesPolicy huge_pages_policy)
-    : _thread_context(std::make_shared<ThreadContext>(queue_type, spsc_queue_capacity, huge_pages_policy))
+  ScopedThreadContext(QueueType queue_type, size_t initial_queue_capacity,
+                      size_t unbounded_queue_max_capacity, HugePagesPolicy huge_pages_policy)
+    : _thread_context(std::make_shared<ThreadContext>(
+        queue_type, initial_queue_capacity, unbounded_queue_max_capacity, huge_pages_policy))
   {
 #ifndef NDEBUG
     // Thread-local flag to track if an instance has been created for this thread.
@@ -395,34 +387,16 @@ private:
   std::shared_ptr<ThreadContext> _thread_context;
 };
 
-inline thread_local std::shared_ptr<ScopedThreadContext> scoped_thread_context = nullptr;
-
-/***/
-template <typename TFrontendOptions>
-QUILL_ATTRIBUTE_COLD void initialize_thread_context() noexcept
-{
-  scoped_thread_context = std::make_shared<ScopedThreadContext>(
-    TFrontendOptions::queue_type, TFrontendOptions::initial_queue_capacity, TFrontendOptions::huge_pages_policy);
-}
-
-/***/
-template <typename TFrontendOptions>
-QUILL_ATTRIBUTE_COLD void reset_thread_context() noexcept
-{
-  scoped_thread_context.reset();
-}
-
 /***/
 template <typename TFrontendOptions>
 QUILL_NODISCARD QUILL_ATTRIBUTE_HOT ThreadContext* get_local_thread_context() noexcept
 {
-  if (!scoped_thread_context)
-    initialize_thread_context<TFrontendOptions>();
+  thread_local ScopedThreadContext scoped_thread_context{
+    TFrontendOptions::queue_type, TFrontendOptions::initial_queue_capacity,
+    TFrontendOptions::unbounded_queue_max_capacity, TFrontendOptions::huge_pages_policy};
 
-  return scoped_thread_context->get_thread_context();
+  return scoped_thread_context.get_thread_context();
 }
-
-
 } // namespace detail
 
 QUILL_END_NAMESPACE
