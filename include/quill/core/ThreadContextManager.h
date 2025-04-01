@@ -60,17 +60,18 @@ private:
 public:
   /***/
   ThreadContext(QueueType queue_type, size_t initial_queue_capacity,
-                QUILL_MAYBE_UNUSED size_t unbounded_queue_max_capacity, HugePagesPolicy huge_pages_policy)
+                QUILL_MAYBE_UNUSED size_t unbounded_queue_max_capacity,
+                AllocationPolicy allocation_policy, HugePagesPolicy huge_pages_policy)
     : _queue_type(queue_type)
   {
     if (has_unbounded_queue_type())
     {
       new (&_spsc_queue_union.unbounded_spsc_queue)
-        UnboundedSPSCQueue{initial_queue_capacity, unbounded_queue_max_capacity, huge_pages_policy};
+        UnboundedSPSCQueue{initial_queue_capacity, unbounded_queue_max_capacity, allocation_policy, huge_pages_policy};
     }
     else if (has_bounded_queue_type())
     {
-      new (&_spsc_queue_union.bounded_spsc_queue) BoundedSPSCQueue{initial_queue_capacity, huge_pages_policy};
+      new (&_spsc_queue_union.bounded_spsc_queue) BoundedSPSCQueue{initial_queue_capacity, allocation_policy, huge_pages_policy};
     }
   }
 
@@ -331,10 +332,10 @@ class ScopedThreadContext
 {
 public:
   /***/
-  ScopedThreadContext(QueueType queue_type, size_t initial_queue_capacity,
-                      size_t unbounded_queue_max_capacity, HugePagesPolicy huge_pages_policy)
+  ScopedThreadContext(QueueType queue_type, size_t initial_queue_capacity, size_t unbounded_queue_max_capacity,
+                      AllocationPolicy allocation_policy, HugePagesPolicy huge_pages_policy)
     : _thread_context(std::make_shared<ThreadContext>(
-        queue_type, initial_queue_capacity, unbounded_queue_max_capacity, huge_pages_policy))
+        queue_type, initial_queue_capacity, unbounded_queue_max_capacity, allocation_policy, huge_pages_policy))
   {
 #ifndef NDEBUG
     // Thread-local flag to track if an instance has been created for this thread.
@@ -393,7 +394,8 @@ QUILL_NODISCARD QUILL_ATTRIBUTE_HOT ThreadContext* get_local_thread_context() no
 {
   thread_local ScopedThreadContext scoped_thread_context{
     TFrontendOptions::queue_type, TFrontendOptions::initial_queue_capacity,
-    TFrontendOptions::unbounded_queue_max_capacity, TFrontendOptions::huge_pages_policy};
+    TFrontendOptions::unbounded_queue_max_capacity, TFrontendOptions::allocation_policy,
+    TFrontendOptions::huge_pages_policy};
 
   return scoped_thread_context.get_thread_context();
 }

@@ -53,13 +53,15 @@ public:
   using integer_type = T;
 
   QUILL_ATTRIBUTE_HOT explicit BoundedSPSCQueueImpl(integer_type capacity,
+                                                    AllocationPolicy allocation_policy = AllocationPolicy::Mmap,
                                                     HugePagesPolicy huge_pages_policy = HugePagesPolicy::Never,
                                                     integer_type reader_store_percent = 5)
     : _capacity(next_power_of_two(capacity)),
       _mask(_capacity - 1),
       _bytes_per_batch(static_cast<integer_type>(static_cast<double>(_capacity * reader_store_percent) / 100.0)),
       _storage(static_cast<std::byte*>(_alloc_aligned(
-        2ull * static_cast<uint64_t>(_capacity), QUILL_CACHE_LINE_ALIGNED, huge_pages_policy))),
+        2ull * static_cast<uint64_t>(_capacity), QUILL_CACHE_LINE_ALIGNED, allocation_policy, huge_pages_policy))),
+      _allocation_policy(allocation_policy),
       _huge_pages_policy(huge_pages_policy)
   {
     std::memset(_storage, 0, 2ull * static_cast<uint64_t>(_capacity));
@@ -89,7 +91,7 @@ public:
 #endif
   }
 
-  ~BoundedSPSCQueueImpl() { _free_aligned(_storage); }
+  ~BoundedSPSCQueueImpl() { _free_aligned(_storage, _allocation_policy); }
 
   /**
    * Deleted
@@ -190,6 +192,8 @@ public:
 
   QUILL_NODISCARD HugePagesPolicy huge_pages_policy() const noexcept { return _huge_pages_policy; }
 
+  QUILL_NODISCARD AllocationPolicy allocation_policy() const noexcept { return _allocation_policy; }
+
 private:
 #if defined(QUILL_X86ARCH)
   QUILL_ATTRIBUTE_HOT void _flush_cachelines(integer_type& last, integer_type offset)
@@ -229,7 +233,7 @@ private:
    * @throws QuillError on failure
    */
 
-  QUILL_NODISCARD static void* _alloc_aligned(size_t size, size_t alignment,
+  QUILL_NODISCARD static void* _alloc_aligned(size_t size, size_t alignment, QUILL_MAYBE_UNUSED AllocationPolicy allocation_policy,
                                               QUILL_MAYBE_UNUSED HugePagesPolicy huge_pages_policy)
   {
 #if defined(_WIN32)
@@ -243,6 +247,11 @@ private:
 
     return p;
 #else
+    if (allocation_policy == AllocationPolicy::Global)
+    {
+      return aligned_alloc(alignment, size);
+    }
+
     // Calculate the total size including the metadata and alignment
     constexpr size_t metadata_size{2u * sizeof(size_t)};
     size_t const total_size{size + metadata_size + alignment};
@@ -292,11 +301,17 @@ private:
    * Free aligned memory allocated with _alloc_aligned
    * @param ptr address to aligned memory
    */
-  void static _free_aligned(void* ptr) noexcept
+  void static _free_aligned(void* ptr, AllocationPolicy allocation_policy) noexcept
   {
 #if defined(_WIN32)
     _aligned_free(ptr);
 #else
+    if (allocation_policy == AllocationPolicy::Global)
+    {
+      free(ptr);
+      return;
+    }
+
     // Retrieve the size and offset information from the metadata
     size_t offset;
     std::memcpy(&offset, static_cast<std::byte*>(ptr) - (2u * sizeof(size_t)), sizeof(offset));
@@ -318,6 +333,7 @@ private:
   integer_type const _mask;
   integer_type const _bytes_per_batch;
   std::byte* const _storage{nullptr};
+  AllocationPolicy const _allocation_policy;
   HugePagesPolicy const _huge_pages_policy;
 
   alignas(QUILL_CACHE_LINE_ALIGNED) std::atomic<integer_type> _atomic_writer_pos{0};

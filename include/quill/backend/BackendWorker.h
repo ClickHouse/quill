@@ -285,13 +285,12 @@ private:
       if (cached_transit_events_count < _options.transit_events_soft_limit)
       {
         // process a single transit event, then give priority to reading the frontend queues again
-        _process_lowest_timestamp_transit_event();
+        _process_lowest_timestamp_transit_event<false>();
       }
       else
       {
         // we want to process a batch of events.
-        while (!has_pending_events_for_caching_when_transit_event_buffer_empty() &&
-               _process_lowest_timestamp_transit_event())
+        while (_process_lowest_timestamp_transit_event<true>())
         {
           // We need to be cautious because there are log messages in the lock-free queues
           // that have not yet been cached in the transit event buffer. Logging only the cached
@@ -408,8 +407,7 @@ private:
       uint64_t const cached_transit_events_count = _populate_transit_events_from_frontend_queues();
       if (cached_transit_events_count > 0)
       {
-        while (!has_pending_events_for_caching_when_transit_event_buffer_empty() &&
-               _process_lowest_timestamp_transit_event())
+        while (_process_lowest_timestamp_transit_event<true>())
         {
           // We need to be cautious because there are log messages in the lock-free queues
           // that have not yet been cached in the transit event buffer. Logging only the cached
@@ -474,6 +472,9 @@ private:
     {
       std::byte* read_pos;
 
+      if (thread_context->_transit_event_buffer->size() >= _options.transit_events_hard_limit)
+        break;
+
       if constexpr (std::is_same_v<TFrontendQueue, UnboundedSPSCQueue>)
       {
         read_pos = _read_unbounded_frontend_queue(frontend_queue, thread_context);
@@ -504,8 +505,7 @@ private:
       total_bytes_read += bytes_read;
       // Reads a maximum of one full frontend queue or the transit events' hard limit to prevent
       // getting stuck on the same producer.
-    } while ((total_bytes_read < queue_capacity) &&
-             (thread_context->_transit_event_buffer->size() < _options.transit_events_hard_limit));
+    } while (total_bytes_read < queue_capacity);
 
     if (total_bytes_read != 0)
     {
@@ -514,6 +514,8 @@ private:
       // only once.
       frontend_queue.commit_read();
     }
+
+    thread_context->_transit_event_buffer->update_size(std::chrono::nanoseconds{ts_now}, _options.transit_event_decay_period);
 
     return thread_context->_transit_event_buffer->size();
   }
@@ -704,16 +706,15 @@ private:
       if (thread_context->_transit_event_buffer->empty())
       {
         // if there is no _transit_event_buffer yet then check only the queue
-        if (thread_context->has_unbounded_queue_type() &&
-            !thread_context->get_spsc_queue_union().unbounded_spsc_queue.empty())
+        if (thread_context->has_unbounded_queue_type())
         {
-          return true;
+          if (!thread_context->get_spsc_queue_union().unbounded_spsc_queue.empty())
+            return true;
         }
-
-        if (thread_context->has_bounded_queue_type() &&
-            !thread_context->get_spsc_queue_union().bounded_spsc_queue.empty())
+        else
         {
-          return true;
+          if (!thread_context->get_spsc_queue_union().bounded_spsc_queue.empty())
+            return true;
         }
       }
     }
@@ -724,8 +725,12 @@ private:
   /**
    * Processes the cached transit event with the minimum timestamp
    */
+  template <bool check_queue>
   QUILL_ATTRIBUTE_HOT bool _process_lowest_timestamp_transit_event()
   {
+    if constexpr (check_queue)
+      _update_active_thread_contexts_cache();
+
     // Get the lowest timestamp
     uint64_t min_ts{std::numeric_limits<uint64_t>::max()};
     ThreadContext* thread_context{nullptr};
@@ -735,6 +740,27 @@ private:
       assert(tc->_transit_event_buffer &&
              "transit_event_buffer should always be valid here as we always populate it with the "
              "_active_thread_contexts_cache");
+
+      if constexpr (check_queue)
+      {
+        if (tc->_transit_event_buffer->empty())
+        {
+          // if there is no _transit_event_buffer yet then check only the queue
+          if (tc->has_unbounded_queue_type())
+          {
+            if (!tc->get_spsc_queue_union().unbounded_spsc_queue.empty())
+            {
+              return false;
+            }
+          }
+          else
+          {
+            if (!tc->get_spsc_queue_union().bounded_spsc_queue.empty())
+              return false;
+          }
+          continue;
+        }
+      }
 
       TransitEvent const* te = tc->_transit_event_buffer->front();
       if (te && (min_ts > te->timestamp))

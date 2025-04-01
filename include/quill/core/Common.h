@@ -83,4 +83,10 @@ enum class HugePagesPolicy
   Try     // Try huge pages, but fall back to normal pages if unavailable
 };
 
+enum class AllocationPolicy
+{
+  Global,  // Use global allocator
+  Mmap, // Use mmap
+};
+
 QUILL_END_NAMESPACE

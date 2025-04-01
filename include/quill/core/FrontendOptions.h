@@ -47,6 +47,11 @@ struct FrontendOptions
    * Enables huge pages on the frontend queues to reduce TLB misses. Available only for Linux.
    */
   static constexpr HugePagesPolicy huge_pages_policy = HugePagesPolicy::Never;
+
+  /**
+   * Define allocator for frontend queue.
+   */
+  static constexpr AllocationPolicy allocation_policy = AllocationPolicy::Mmap;
 };
 
 QUILL_END_NAMESPACE
