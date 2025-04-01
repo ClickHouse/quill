@@ -10,6 +10,7 @@
 #include "quill/bundled/fmt/format.h" // for assert_fail
 #include "quill/core/Attributes.h"
 #include "quill/core/MathUtilities.h"
+#include <chrono>
 
 QUILL_BEGIN_NAMESPACE
 
@@ -74,6 +75,50 @@ public:
 
   QUILL_ATTRIBUTE_HOT void pop_front() noexcept { ++_reader_pos; }
 
+  QUILL_ATTRIBUTE_HOT void update_size(std::chrono::nanoseconds ts, std::chrono::milliseconds decay_period) noexcept
+  {
+    if (decay_period == std::chrono::milliseconds{0})
+      return;
+
+    if (_capacity == _initial_capacity)
+      return;
+
+    auto current_size = size();
+    auto previous_capacity = _capacity >> 1;
+
+    if (current_size > previous_capacity)
+    {
+      _max_size = 0;
+      _last_capacity_check = std::chrono::nanoseconds{0};
+      return;
+    }
+
+    _max_size = std::max(_max_size, current_size);
+    if (_last_capacity_check == std::chrono::nanoseconds{0})
+    {
+      _last_capacity_check = ts;
+      return;
+    }
+
+    if (ts - _last_capacity_check <= decay_period)
+      return;
+
+    auto new_capacity = next_power_of_two(_max_size);
+    auto new_storage = std::make_unique<TransitEvent[]>(new_capacity);
+    for (size_t i = 0; i < current_size; ++i)
+    {
+      new_storage[i] = std::move(_storage[(_reader_pos + i) & _mask]);
+    }
+
+    _storage = std::move(new_storage);
+    _capacity = new_capacity;
+    _mask = _capacity - 1;
+    _writer_pos = current_size;
+    _reader_pos = 0;
+    _last_capacity_check = std::chrono::nanoseconds{0};
+    _max_size = 0;
+  }
+
   QUILL_NODISCARD QUILL_ATTRIBUTE_HOT TransitEvent* back() noexcept
   {
     if (_capacity == size())
@@ -122,7 +167,6 @@ private:
   void _expand()
   {
     size_t const new_capacity = _capacity * 2;
-
     auto new_storage = std::make_unique<TransitEvent[]>(new_capacity);
 
     // Move existing elements from the old storage to the new storage.
@@ -139,11 +183,14 @@ private:
     _mask = _capacity - 1;
     _writer_pos = current_size;
     _reader_pos = 0;
+    _last_capacity_check = std::chrono::nanoseconds{0};
   }
 
   size_t _initial_capacity;
   size_t _capacity;
   std::unique_ptr<TransitEvent[]> _storage;
+  std::chrono::nanoseconds _last_capacity_check{0};
+  size_t _max_size = 0;
   size_t _mask;
   size_t _reader_pos{0};
   size_t _writer_pos{0};

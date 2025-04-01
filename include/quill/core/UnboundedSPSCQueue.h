@@ -47,8 +47,8 @@ private:
      * @param bounded_queue_capacity the capacity of the fixed buffer
      * @param huge_pages_policy enables huge pages
      */
-    explicit Node(size_t bounded_queue_capacity, HugePagesPolicy huge_pages_policy)
-      : bounded_queue(bounded_queue_capacity, huge_pages_policy)
+    explicit Node(size_t bounded_queue_capacity, AllocationPolicy allocation_policy, HugePagesPolicy huge_pages_policy)
+      : bounded_queue(bounded_queue_capacity, allocation_policy, huge_pages_policy)
     {
     }
 
@@ -71,12 +71,13 @@ public:
   /**
    * Constructor
    */
-  UnboundedSPSCQueue(size_t initial_bounded_queue_capacity, size_t max_capacity,
+  UnboundedSPSCQueue(size_t initial_bounded_queue_capacity, size_t max_capacity, AllocationPolicy allocation_policy = quill::AllocationPolicy::Mmap,
                      HugePagesPolicy huge_pages_policy = quill::HugePagesPolicy::Never)
     : _max_capacity(max_capacity),
-      _producer(new Node(initial_bounded_queue_capacity, huge_pages_policy)),
+      _producer(new Node(initial_bounded_queue_capacity, allocation_policy, huge_pages_policy)),
       _consumer(_producer)
   {
+    _total_allocated.fetch_add(initial_bounded_queue_capacity);
   }
 
   /**
@@ -153,6 +154,11 @@ public:
     return _producer->bounded_queue.capacity();
   }
 
+  QUILL_NODISCARD size_t total_allocated() const noexcept
+  {
+    return _total_allocated.load(std::memory_order_relaxed);
+  }
+
   /**
    * Shrinks the queue if capacity is a valid smaller power of 2.
    * @param capacity New target capacity.
@@ -160,7 +166,7 @@ public:
    */
   void shrink(size_t capacity)
   {
-    if (capacity > (_producer->bounded_queue.capacity() >> 1))
+    if (capacity >= (_producer->bounded_queue.capacity()))
     {
       // We should only shrink if the new capacity is less or at least equal to the previous_power_of_2
       return;
@@ -168,7 +174,9 @@ public:
 
     // We want to shrink the queue, we will create a new queue with a smaller size
     // the consumer will switch to the newer queue after emptying and deallocating the older queue
-    auto const next_node = new Node{capacity, _producer->bounded_queue.huge_pages_policy()};
+    auto const next_node = new Node{capacity, _producer->bounded_queue.allocation_policy(),
+                                    _producer->bounded_queue.huge_pages_policy()};
+    _total_allocated.fetch_add(capacity, std::memory_order_relaxed);
 
     // store the new node pointer as next in the current node
     _producer->next.store(next_node, std::memory_order_release);
@@ -238,14 +246,17 @@ private:
   /***/
   QUILL_NODISCARD std::byte* _handle_full_queue(size_t nbytes)
   {
+    auto current_allocated = _total_allocated.load(std::memory_order_relaxed);
+
     // Then it means the queue doesn't have enough size
     size_t capacity = _producer->bounded_queue.capacity() * 2ull;
+
     while (capacity < nbytes)
     {
       capacity = capacity * 2ull;
     }
 
-    if (QUILL_UNLIKELY(capacity > _max_capacity))
+    if (QUILL_UNLIKELY(current_allocated + capacity > _max_capacity))
     {
       if (nbytes > _max_capacity)
       {
@@ -266,14 +277,17 @@ private:
 
       // we reached the unbounded_queue_max_capacity we won't be allocating more
       // instead return nullptr to block or drop
-      return nullptr;
+      if (capacity != _max_capacity || _producer->bounded_queue.capacity() != current_allocated)
+        return nullptr;
     }
 
     // commit previous write to the old queue before switching
     _producer->bounded_queue.commit_write();
 
     // We failed to reserve because the queue was full, create a new node with a new queue
-    auto const next_node = new Node{capacity, _producer->bounded_queue.huge_pages_policy()};
+    auto const next_node = new Node{capacity, _producer->bounded_queue.allocation_policy(),
+                                    _producer->bounded_queue.huge_pages_policy()};
+    _total_allocated.fetch_add(capacity, std::memory_order_relaxed);
 
     // store the new node pointer as next in the current node
     _producer->next.store(next_node, std::memory_order_release);
@@ -308,7 +322,9 @@ private:
 
     // switch to the new buffer, existing one is deleted
     auto const previous_capacity = _consumer->bounded_queue.capacity();
+
     delete _consumer;
+    _total_allocated.fetch_sub(previous_capacity, std::memory_order_relaxed);
 
     _consumer = next_node;
     read_result.read_pos = _consumer->bounded_queue.prepare_read();
@@ -323,6 +339,8 @@ private:
 
 private:
   size_t _max_capacity;
+
+  std::atomic<size_t> _total_allocated = 0;
 
   /** Modified by either the producer or consumer but never both */
   alignas(QUILL_CACHE_LINE_ALIGNED) Node* _producer{nullptr};

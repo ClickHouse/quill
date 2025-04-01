@@ -92,6 +92,12 @@ struct BackendOptions
   size_t transit_events_hard_limit = 32'768;
 
   /**
+   * If amount of events buffer for last `transit_event_decay_period` milliseconds can be stored in previous capacity size,
+   * reduce the capacity.
+   */
+  std::chrono::milliseconds transit_event_decay_period{0};
+
+  /**
    * The backend iterates through all frontend lock-free queues and pops all messages from each
    * queue. It then buffers and logs the message with the lowest timestamp among them.
    *

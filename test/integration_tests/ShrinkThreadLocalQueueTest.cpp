@@ -20,6 +20,7 @@ struct CustomFrontendOptions
   static constexpr uint32_t blocking_queue_retry_interval_ns = 800;
   static constexpr size_t unbounded_queue_max_capacity = 2ull * 1024 * 1024 * 1024; // 2 GiB
   static constexpr quill::HugePagesPolicy huge_pages_policy = quill::HugePagesPolicy::Never;
+  static constexpr quill::AllocationPolicy allocation_policy = quill::AllocationPolicy::Mmap;
 };
 
 using CustomFrontend = FrontendImpl<CustomFrontendOptions>;
