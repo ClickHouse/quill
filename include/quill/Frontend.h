@@ -74,6 +74,9 @@ public:
   {
     if constexpr (logger_t::using_unbounded_queue)
     {
+      if (!detail::thread_context_created_flag())
+        return;
+
       detail::get_local_thread_context<TFrontendOptions>()
         ->template get_spsc_queue<TFrontendOptions::queue_type>()
         .shrink(capacity);

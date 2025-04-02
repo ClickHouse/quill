@@ -388,6 +388,11 @@ private:
   std::shared_ptr<ThreadContext> _thread_context;
 };
 
+inline bool& thread_context_created_flag() {
+  thread_local bool flag_value = false;
+  return flag_value;
+}
+
 /***/
 template <typename TFrontendOptions>
 QUILL_NODISCARD QUILL_ATTRIBUTE_HOT ThreadContext* get_local_thread_context() noexcept
@@ -397,6 +402,7 @@ QUILL_NODISCARD QUILL_ATTRIBUTE_HOT ThreadContext* get_local_thread_context() no
     TFrontendOptions::unbounded_queue_max_capacity, TFrontendOptions::allocation_policy,
     TFrontendOptions::huge_pages_policy};
 
+  thread_context_created_flag() = true;
   return scoped_thread_context.get_thread_context();
 }
 } // namespace detail

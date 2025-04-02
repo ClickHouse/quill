@@ -91,6 +91,8 @@ struct BackendOptions
    */
   size_t transit_events_hard_limit = 32'768;
 
+  size_t transit_events_global_limit = 3'000'000;
+
   /**
    * If amount of events buffer for last `transit_event_decay_period` milliseconds can be stored in previous capacity size,
    * reduce the capacity.

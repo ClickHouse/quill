@@ -62,6 +62,7 @@
 #include <unordered_map>
 #include <utility>
 #include <vector>
+#include <queue>
 
 QUILL_BEGIN_NAMESPACE
 
@@ -355,6 +356,8 @@ private:
 
     (void)get_thread_name();
 
+    _format_buffer_pool.emplace(_options.transit_event_buffer_initial_capacity);
+
     // Double check or modify some backend options before we start
     if (_options.transit_events_hard_limit == 0)
     {
@@ -433,8 +436,10 @@ private:
 
     size_t cached_transit_events_count{0};
 
-    for (ThreadContext* thread_context : _active_thread_contexts_cache)
+    bool global_limit_reached = false;
+    for (size_t i = 0, current_index = _thread_context_on_global_limit; i < _active_thread_contexts_cache.size(); ++i, ++current_index)
     {
+      auto * thread_context = _active_thread_contexts_cache[current_index % _active_thread_contexts_cache.size()];
       assert(thread_context->has_unbounded_queue_type() || thread_context->has_bounded_queue_type());
 
       if (thread_context->has_unbounded_queue_type())
@@ -447,7 +452,19 @@ private:
         cached_transit_events_count += _read_and_decode_frontend_queue(
           thread_context->get_spsc_queue_union().bounded_spsc_queue, thread_context, ts_now);
       }
+
+      /**
+       * Remember the index where we reached limit so we can continue reading from this thread context
+       */
+      if (!global_limit_reached && _thread_context_queue.size() >= _options.transit_events_global_limit)
+      {
+        _thread_context_on_global_limit = current_index;
+        global_limit_reached = true;
+      }
     }
+
+    if (!global_limit_reached)
+      _thread_context_on_global_limit = 0;
 
     return cached_transit_events_count;
   }
@@ -472,6 +489,8 @@ private:
     {
       std::byte* read_pos;
 
+      // Reads a maximum of one full frontend queue or the transit events' hard limit to prevent
+      // getting stuck on the same producer.
       if (thread_context->_transit_event_buffer->size() >= _options.transit_events_hard_limit)
         break;
 
@@ -503,9 +522,8 @@ private:
       auto const bytes_read = static_cast<size_t>(read_pos - read_begin);
       frontend_queue.finish_read(bytes_read);
       total_bytes_read += bytes_read;
-      // Reads a maximum of one full frontend queue or the transit events' hard limit to prevent
-      // getting stuck on the same producer.
-    } while (total_bytes_read < queue_capacity);
+
+    } while (total_bytes_read < queue_capacity && _thread_context_queue.size() >= _options.transit_events_global_limit);
 
     if (total_bytes_read != 0)
     {
@@ -601,6 +619,7 @@ private:
     if ((transit_event->macro_metadata->event() != MacroMetadata::Event::Flush) &&
         (transit_event->macro_metadata->event() != MacroMetadata::Event::LoggerRemovalRequest))
     {
+      transit_event->formatted_msg = _format_buffer_pool->borrow_buffer();
       format_args_decoder(read_pos, _format_args_store);
 
       if (!transit_event->macro_metadata->has_named_args())
@@ -686,6 +705,9 @@ private:
     // commit this transit event
     thread_context->_transit_event_buffer->push_back();
 
+    _thread_context_queue.push(std::pair{transit_event->timestamp, thread_context});
+    _max_timestamp = std::max(_max_timestamp, transit_event->timestamp);
+
     return true;
   }
 
@@ -728,53 +750,14 @@ private:
   template <bool check_queue>
   QUILL_ATTRIBUTE_HOT bool _process_lowest_timestamp_transit_event()
   {
-    if constexpr (check_queue)
-      _update_active_thread_contexts_cache();
-
-    // Get the lowest timestamp
-    uint64_t min_ts{std::numeric_limits<uint64_t>::max()};
-    ThreadContext* thread_context{nullptr};
-
-    for (ThreadContext* tc : _active_thread_contexts_cache)
-    {
-      assert(tc->_transit_event_buffer &&
-             "transit_event_buffer should always be valid here as we always populate it with the "
-             "_active_thread_contexts_cache");
-
-      if constexpr (check_queue)
-      {
-        if (tc->_transit_event_buffer->empty())
-        {
-          // if there is no _transit_event_buffer yet then check only the queue
-          if (tc->has_unbounded_queue_type())
-          {
-            if (!tc->get_spsc_queue_union().unbounded_spsc_queue.empty())
-            {
-              return false;
-            }
-          }
-          else
-          {
-            if (!tc->get_spsc_queue_union().bounded_spsc_queue.empty())
-              return false;
-          }
-          continue;
-        }
-      }
-
-      TransitEvent const* te = tc->_transit_event_buffer->front();
-      if (te && (min_ts > te->timestamp))
-      {
-        min_ts = te->timestamp;
-        thread_context = tc;
-      }
-    }
-
-    if (!thread_context)
+    if (_thread_context_queue.empty())
     {
       // all transit event buffers are empty
       return false;
     }
+
+    auto [timestamp, thread_context] = _thread_context_queue.top();
+    _thread_context_queue.pop();
 
     TransitEvent* transit_event = thread_context->_transit_event_buffer->front();
     assert(transit_event && "transit_buffer is set only when transit_event is valid");
@@ -814,6 +797,22 @@ private:
 
       // Now it’s safe to notify the caller to continue execution.
       flush_flag->store(true);
+    }
+
+    // If we reached some kind of limit before for thread, check if we have some logs that should be added to the batch
+    // based on the max timestamp we read
+    if (thread_context->_transit_event_buffer->empty())
+    {
+      if (thread_context->has_unbounded_queue_type())
+      {
+        _read_and_decode_frontend_queue(
+          thread_context->get_spsc_queue_union().unbounded_spsc_queue, thread_context, _max_timestamp);
+      }
+      else if (thread_context->has_bounded_queue_type())
+      {
+        _read_and_decode_frontend_queue(
+          thread_context->get_spsc_queue_union().bounded_spsc_queue, thread_context, _max_timestamp);
+      }
     }
 
     return true;
@@ -899,6 +898,12 @@ private:
       transit_event.flush_flag = nullptr;
 
       // We defer notifying the caller until after this function completes.
+    }
+
+    if ((transit_event.macro_metadata->event() != MacroMetadata::Event::Flush) &&
+        (transit_event.macro_metadata->event() != MacroMetadata::Event::LoggerRemovalRequest))
+    {
+      _format_buffer_pool->return_buffer(std::move(transit_event.formatted_msg));
     }
   }
 
@@ -1735,8 +1740,13 @@ private:
   BackendOptions _options;
   std::thread _worker_thread;
 
+  std::priority_queue<std::pair<uint64_t, ThreadContext*>, std::vector<std::pair<uint64_t, ThreadContext*>>, std::greater<>> _thread_context_queue;
+  uint64_t _max_timestamp = 0;
+  std::optional<FormatBufferPool> _format_buffer_pool;
+
   DynamicFormatArgStore _format_args_store; /** Format args tmp storage as member to avoid reallocation */
   std::vector<ThreadContext*> _active_thread_contexts_cache;
+  size_t _thread_context_on_global_limit = 0; /** Index of the last thread context we read when the global limit was reached */
   std::vector<Sink*> _active_sinks_cache; /** Member to avoid re-allocating **/
   std::unordered_map<std::string, std::pair<std::string, std::vector<std::pair<std::string, std::string>>>> _named_args_templates; /** Avoid re-formating the same named args log template each time */
   std::unordered_map<std::pair<std::string, std::string>, std::unique_ptr<MacroMetadata>, PairHash> _runtime_metadata; /** Used to store runtime metadata **/
